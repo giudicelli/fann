@@ -364,25 +364,54 @@ void fann_backpropagate_MSE(struct fann *ann)
 	}
 }
 
+void fann_update_weights_neuron(struct fann *ann, struct fann_neuron *first_neuron, struct fann_neuron *prev_neurons, struct fann_neuron *neuron_it)
+{
+	fann_type tmp_error, delta_w;
+	fann_type *weights, *weights_deltas;
+	unsigned int i, num_connections;
+
+        if(ann->connection_rate >= 1)
+        {
+                tmp_error = ann->train_errors[neuron_it - first_neuron] * ann->learning_rate;
+                num_connections = neuron_it->last_con - neuron_it->first_con;
+                weights = ann->weights + neuron_it->first_con;
+                weights_deltas = ann->prev_weights_deltas + neuron_it->first_con;
+                for(i = 0; i < num_connections; i++)
+                {
+                        delta_w = tmp_error * prev_neurons[i].value + ann->learning_momentum * weights_deltas[i];
+                        weights[i] += delta_w ;
+                        weights_deltas[i] = delta_w;
+                }
+        }
+        else
+        {
+                tmp_error = ann->train_errors[neuron_it - first_neuron] * ann->learning_rate;
+                num_connections = neuron_it->last_con - neuron_it->first_con;
+                weights = ann->weights + neuron_it->first_con;
+                weights_deltas = ann->prev_weights_deltas + neuron_it->first_con;
+                for(i = 0; i < num_connections; i++)
+                {
+                        delta_w = tmp_error * prev_neurons[i].value + ann->learning_momentum * weights_deltas[i];
+                        weights[i] += delta_w;
+                        weights_deltas[i] = delta_w;
+                }
+        }
+}
+
+
 /* INTERNAL FUNCTION
    Update weights for incremental training
 */
 void fann_update_weights(struct fann *ann)
 {
-	struct fann_neuron *neuron_it, *last_neuron, *prev_neurons;
-	fann_type tmp_error, delta_w, *weights;
+	struct fann_neuron *prev_neurons;
 	struct fann_layer *layer_it;
-	unsigned int i;
-	unsigned int num_connections;
+	unsigned int i, num_neurons;
 
 	/* store some variabels local for fast access */
-	const float learning_rate = ann->learning_rate;
-    const float learning_momentum = ann->learning_momentum;        
 	struct fann_neuron *first_neuron = ann->first_layer->first_neuron;
 	struct fann_layer *first_layer = ann->first_layer;
 	const struct fann_layer *last_layer = ann->last_layer;
-	fann_type *error_begin = ann->train_errors;
-	fann_type *deltas_begin, *weights_deltas;
 
 	/* if no room allocated for the deltas, allocate it now */
 	if(ann->prev_weights_deltas == NULL)
@@ -399,51 +428,63 @@ void fann_update_weights(struct fann *ann)
 #ifdef DEBUGTRAIN
 	printf("\nupdate weights\n");
 #endif
-	deltas_begin = ann->prev_weights_deltas;
 	prev_neurons = first_neuron;
 	for(layer_it = (first_layer + 1); layer_it != last_layer; layer_it++)
 	{
 #ifdef DEBUGTRAIN
 		printf("layer[%d]\n", layer_it - first_layer);
 #endif
-		last_neuron = layer_it->last_neuron;
 		if(ann->connection_rate >= 1)
 		{
 			if(ann->network_type == FANN_NETTYPE_LAYER)
 			{
 				prev_neurons = (layer_it - 1)->first_neuron;
 			}
-			for(neuron_it = layer_it->first_neuron; neuron_it != last_neuron; neuron_it++)
-			{
-				tmp_error = error_begin[neuron_it - first_neuron] * learning_rate;
-				num_connections = neuron_it->last_con - neuron_it->first_con;
-				weights = ann->weights + neuron_it->first_con;
-				weights_deltas = deltas_begin + neuron_it->first_con;
-				for(i = 0; i != num_connections; i++)
-				{
-					delta_w = tmp_error * prev_neurons[i].value + learning_momentum * weights_deltas[i];
-					weights[i] += delta_w ;
-					weights_deltas[i] = delta_w;
-				}
-			}
+                        num_neurons = (unsigned int)(layer_it->last_neuron - layer_it->first_neuron);
+                        #pragma omp parallel for if(num_neurons > 100) schedule(static) private(i)
+                        for(i = 0; i < num_neurons; i++) {
+                                fann_update_weights_neuron(ann, first_neuron, prev_neurons, &layer_it->first_neuron[i]);
+                        }
 		}
 		else
 		{
-			for(neuron_it = layer_it->first_neuron; neuron_it != last_neuron; neuron_it++)
-			{
-				tmp_error = error_begin[neuron_it - first_neuron] * learning_rate;
-				num_connections = neuron_it->last_con - neuron_it->first_con;
-				weights = ann->weights + neuron_it->first_con;
-				weights_deltas = deltas_begin + neuron_it->first_con;
-				for(i = 0; i != num_connections; i++)
-				{
-					delta_w = tmp_error * prev_neurons[i].value + learning_momentum * weights_deltas[i];
-					weights[i] += delta_w;
-					weights_deltas[i] = delta_w;
-				}
-			}
+                        num_neurons = (unsigned int)(layer_it->last_neuron - layer_it->first_neuron);
+                        #pragma omp parallel for if(num_neurons > 100) schedule(static) private(i)
+                        for(i = 0; i < num_neurons; i++) {
+                                fann_update_weights_neuron(ann, first_neuron, prev_neurons, &layer_it->first_neuron[i]);
+                        }
 		}
 	}
+}
+
+void fann_update_slopes_batch_neuron(struct fann *ann, struct fann_neuron *first_neuron, struct fann_neuron *prev_neurons, struct fann_neuron *neuron_it)
+{
+	fann_type tmp_error;
+	unsigned int i, num_connections;
+	fann_type *neuron_slope;
+	struct fann_neuron **connections;
+
+        if(ann->connection_rate >= 1)
+        {
+                tmp_error = ann->train_errors[neuron_it - first_neuron];
+                neuron_slope = ann->train_slopes + neuron_it->first_con;
+                num_connections = neuron_it->last_con - neuron_it->first_con;
+                for(i = 0; i < num_connections; i++)
+                {
+                        neuron_slope[i] += tmp_error * prev_neurons[i].value;
+                }
+        }
+        else
+        {
+                tmp_error = ann->train_errors[neuron_it - first_neuron];
+                neuron_slope = ann->train_slopes + neuron_it->first_con;
+                num_connections = neuron_it->last_con - neuron_it->first_con;
+                connections = ann->connections + neuron_it->first_con;
+                for(i = 0; i < num_connections; i++)
+                {
+                        neuron_slope[i] += tmp_error * connections[i]->value;
+                }
+        }
 }
 
 /* INTERNAL FUNCTION
@@ -455,14 +496,11 @@ void fann_update_weights(struct fann *ann)
 void fann_update_slopes_batch(struct fann *ann, struct fann_layer *layer_begin,
 							  struct fann_layer *layer_end)
 {
-	struct fann_neuron *neuron_it, *last_neuron, *prev_neurons, **connections;
-	fann_type tmp_error;
-	unsigned int i, num_connections;
+	struct fann_neuron *prev_neurons;
+	unsigned int i, num_neurons;
 
 	/* store some variabels local for fast access */
 	struct fann_neuron *first_neuron = ann->first_layer->first_neuron;
-	fann_type *error_begin = ann->train_errors;
-	fann_type *slope_begin, *neuron_slope;
 
 	/* if no room allocated for the slope variabels, allocate it now */
 	if(ann->train_slopes == NULL)
@@ -486,8 +524,6 @@ void fann_update_slopes_batch(struct fann *ann, struct fann_layer *layer_begin,
 		layer_end = ann->last_layer - 1;
 	}
 
-	slope_begin = ann->train_slopes;
-
 #ifdef DEBUGTRAIN
 	printf("\nupdate slopes\n");
 #endif
@@ -499,38 +535,25 @@ void fann_update_slopes_batch(struct fann *ann, struct fann_layer *layer_begin,
 #ifdef DEBUGTRAIN
 		printf("layer[%d]\n", layer_begin - ann->first_layer);
 #endif
-		last_neuron = layer_begin->last_neuron;
 		if(ann->connection_rate >= 1)
 		{
 			if(ann->network_type == FANN_NETTYPE_LAYER)
 			{
 				prev_neurons = (layer_begin - 1)->first_neuron;
 			}
-
-			for(neuron_it = layer_begin->first_neuron; neuron_it != last_neuron; neuron_it++)
-			{
-				tmp_error = error_begin[neuron_it - first_neuron];
-				neuron_slope = slope_begin + neuron_it->first_con;
-				num_connections = neuron_it->last_con - neuron_it->first_con;
-				for(i = 0; i != num_connections; i++)
-				{
-					neuron_slope[i] += tmp_error * prev_neurons[i].value;
-				}
-			}
+                        num_neurons = (unsigned int)(layer_begin->last_neuron - layer_begin->first_neuron);
+                        #pragma omp parallel for if(num_neurons > 100) schedule(static) private(i)
+                        for(i = 0; i < num_neurons; i++) {
+                                fann_update_slopes_batch_neuron(ann, first_neuron, prev_neurons, &layer_begin->first_neuron[i]);
+                        }
 		}
 		else
 		{
-			for(neuron_it = layer_begin->first_neuron; neuron_it != last_neuron; neuron_it++)
-			{
-				tmp_error = error_begin[neuron_it - first_neuron];
-				neuron_slope = slope_begin + neuron_it->first_con;
-				num_connections = neuron_it->last_con - neuron_it->first_con;
-				connections = ann->connections + neuron_it->first_con;
-				for(i = 0; i != num_connections; i++)
-				{
-					neuron_slope[i] += tmp_error * connections[i]->value;
-				}
-			}
+                        num_neurons = (unsigned int)(layer_begin->last_neuron - layer_begin->first_neuron);
+                        #pragma omp parallel for if(num_neurons > 100) schedule(static) private(i)
+                        for(i = 0; i < num_neurons; i++) {
+                                fann_update_slopes_batch_neuron(ann, first_neuron, prev_neurons, &layer_begin->first_neuron[i]);
+                        }
 		}
 	}
 }

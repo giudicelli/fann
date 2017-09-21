@@ -658,7 +658,7 @@ static void fann_run_neuron(struct fann * ann, struct fann_layer *layer_it, stru
                                 break;
                 }
 
-                for(; i < num_connections; i += 4)
+                for(; i != num_connections; i += 4)
                 {
                         neuron_sum +=
                                 fann_mult(weights[i], neuron_pointers[i]->value) +
